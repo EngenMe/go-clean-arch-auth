@@ -1,0 +1,64 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [develop, staging, main]
+  pull_request:
+    branches: [develop]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: respositories:15
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: test_db
+        ports:
+          - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-go@v4
+        with:
+          go-version: '1.23'
+      - run: go mod download
+      - run: go test -v ./...
+      - name: Build Docker image
+        run: docker build -t app:test .
+
+  deploy-staging:
+    needs: test
+    if: github.ref == 'refs/heads/staging'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Login to Docker Hub
+        run: echo "${{ secrets.DOCKER_HUB_TOKEN }}" | docker login -u ${{ secrets.DOCKER_HUB_USERNAME }} --password-stdin
+      - name: Build and push
+        run: |
+          docker build -t ${{ secrets.DOCKER_HUB_USERNAME }}/myapp:staging .
+          docker push ${{ secrets.DOCKER_HUB_USERNAME }}/myapp:staging
+      - name: Deploy to staging
+        run: |
+          scp -r envs/staging/* ${{ secrets.STAGING_SERVER_USER }}@${{ secrets.STAGING_SERVER_IP }}:/app/
+          ssh ${{ secrets.STAGING_SERVER_USER }}@${{ secrets.STAGING_SERVER_IP }} "cd /app && docker-compose pull && docker-compose up -d"
+
+  deploy-production:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Login to Docker Hub
+        run: echo "${{ secrets.DOCKER_HUB_TOKEN }}" | docker login -u ${{ secrets.DOCKER_HUB_USERNAME }} --password-stdin
+      - name: Build and push
+        run: |
+          docker build -t ${{ secrets.DOCKER_HUB_USERNAME }}/myapp:production .
+          docker push ${{ secrets.DOCKER_HUB_USERNAME }}/myapp:production
+      - name: Deploy to production
+        run: |
+          scp -r envs/production/* ${{ secrets.PRODUCTION_SERVER_USER }}@${{ secrets.PRODUCTION_SERVER_IP }}:/app/
+          ssh ${{ secrets.PRODUCTION_SERVER_USER }}@${{ secrets.PRODUCTION_SERVER_IP }} "cd /app && docker-compose pull && docker-compose up -d"
